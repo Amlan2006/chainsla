@@ -1,0 +1,32 @@
+{
+  "name": "rpc-sla-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@10.8.2",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev:api": "npm --workspace @rpc-sla/api run dev",
+    "dev:worker": "npm --workspace @rpc-sla/worker run dev",
+    "dev:dashboard": "npm --workspace @rpc-sla/dashboard run dev",
+    "lint": "npm run lint --workspaces --if-present",
+    "format": "prettier --check .",
+    "format:write": "prettier --write .",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "contracts:build": "forge build",
+    "contracts:test": "forge test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.31.0",
+    "eslint": "^9.31.0",
+    "eslint-config-next": "^16.2.11",
+    "prettier": "^3.6.2",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.38.0"
+  }
+}

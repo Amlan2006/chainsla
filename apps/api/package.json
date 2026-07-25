@@ -1,0 +1,25 @@
+{
+  "name": "@rpc-sla/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/server.ts",
+    "lint": "eslint src --ext .ts",
+    "start": "node dist/server.js",
+    "test": "node --test",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.1",
+    "@fastify/swagger": "^9.5.1",
+    "@rpc-sla/shared-types": "0.1.0",
+    "fastify": "^5.4.0",
+    "pino": "^9.7.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.3"
+  }
+}

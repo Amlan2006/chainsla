@@ -1,0 +1,12 @@
+node_modules/
+.cache/
+dist/
+.next/
+coverage/
+.env
+.env.local
+.DS_Store
+contracts/out/
+contracts/cache/
+services/monitor-node/bin/
+services/monitor-node/data/
