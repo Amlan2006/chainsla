@@ -1,5 +1,30 @@
 GO_CACHE := $(CURDIR)/.cache/go-build
 
+ENV_DATABASE_URL := $(DATABASE_URL)
+ENV_MONITOR_API_KEY := $(MONITOR_API_KEY)
+ENV_MONITOR_PRIVATE_KEY := $(MONITOR_PRIVATE_KEY)
+ENV_MONITOR_RPC_HTTP_URL := $(MONITOR_RPC_HTTP_URL)
+ENV_MONITOR_CHAIN_ID := $(MONITOR_CHAIN_ID)
+
+-include .env
+export
+
+ifneq ($(ENV_DATABASE_URL),)
+DATABASE_URL := $(ENV_DATABASE_URL)
+endif
+ifneq ($(ENV_MONITOR_API_KEY),)
+MONITOR_API_KEY := $(ENV_MONITOR_API_KEY)
+endif
+ifneq ($(ENV_MONITOR_PRIVATE_KEY),)
+MONITOR_PRIVATE_KEY := $(ENV_MONITOR_PRIVATE_KEY)
+endif
+ifneq ($(ENV_MONITOR_RPC_HTTP_URL),)
+MONITOR_RPC_HTTP_URL := $(ENV_MONITOR_RPC_HTTP_URL)
+endif
+ifneq ($(ENV_MONITOR_CHAIN_ID),)
+MONITOR_CHAIN_ID := $(ENV_MONITOR_CHAIN_ID)
+endif
+
 .PHONY: install dev-infra dev-api dev-worker dev-dashboard dev-monitor-1 dev-monitor-2 dev-monitor-3 test lint build contracts-build contracts-test go-test
 
 install:

@@ -16,7 +16,39 @@ const providers = [
   },
 ];
 
-export default function HomePage() {
+interface Summary {
+  monitors: number;
+  endpoints: number;
+  reports: number;
+  acceptedReports: number;
+}
+
+async function getSummary(): Promise<Summary> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+
+  try {
+    const response = await fetch(`${apiUrl}/summary`, {
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      throw new Error(`summary returned ${response.status}`);
+    }
+
+    return (await response.json()) as Summary;
+  } catch {
+    return {
+      monitors: 0,
+      endpoints: 0,
+      reports: 0,
+      acceptedReports: 0,
+    };
+  }
+}
+
+export default async function HomePage() {
+  const summary = await getSummary();
+
   return (
     <main>
       <header className="topbar">
@@ -30,15 +62,15 @@ export default function HomePage() {
       <section className="summary" aria-label="Monitoring summary">
         <div>
           <span>Endpoints</span>
-          <strong>0</strong>
+          <strong>{summary.endpoints}</strong>
         </div>
         <div>
           <span>Monitors</span>
-          <strong>0</strong>
+          <strong>{summary.monitors}</strong>
         </div>
         <div>
-          <span>Committed Batches</span>
-          <strong>0</strong>
+          <span>Accepted Reports</span>
+          <strong>{summary.acceptedReports}</strong>
         </div>
       </section>
 
