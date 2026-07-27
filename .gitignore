@@ -2,6 +2,9 @@ node_modules/
 .cache/
 dist/
 .next/
+.next*/
+**/.next/
+**/.next*/
 coverage/
 .env
 .env.local

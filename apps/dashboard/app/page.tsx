@@ -21,6 +21,7 @@ interface Summary {
   endpoints: number;
   reports: number;
   acceptedReports: number;
+  aggregateWindows: number;
 }
 
 async function getSummary(): Promise<Summary> {
@@ -42,6 +43,7 @@ async function getSummary(): Promise<Summary> {
       endpoints: 0,
       reports: 0,
       acceptedReports: 0,
+      aggregateWindows: 0,
     };
   }
 }
@@ -69,8 +71,8 @@ export default async function HomePage() {
           <strong>{summary.monitors}</strong>
         </div>
         <div>
-          <span>Accepted Reports</span>
-          <strong>{summary.acceptedReports}</strong>
+          <span>Aggregates</span>
+          <strong>{summary.aggregateWindows}</strong>
         </div>
       </section>
 

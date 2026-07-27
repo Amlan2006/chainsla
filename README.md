@@ -21,6 +21,7 @@ Implemented:
 - PostgreSQL schema for providers, endpoints, monitors, jobs, and reports
 - API report validation with duplicate, nonce, freshness, payload hash, and signature checks
 - API persistence for accepted and rejected monitor reports
+- Worker aggregation for fixed measurement windows, quorum, uptime/error rate, p50/p95/p99 latency, and simple outlier filtering
 - Prometheus-style API metrics endpoint
 - Foundry contract scaffold
 - Docker Compose for PostgreSQL, Redis, Prometheus, and Grafana
@@ -134,6 +135,7 @@ npm run format
 - API readiness: http://localhost:4000/readyz
 - API summary: http://localhost:4000/summary
 - API metrics: http://localhost:4000/metrics
+- API aggregates: http://localhost:4000/aggregates
 - Dashboard: http://localhost:3000
 - Monitor 1 health: http://localhost:8081/healthz
 - Monitor 2 health: http://localhost:8082/healthz
@@ -156,7 +158,7 @@ See [phases.md](./phases.md) for the full phase plan.
 Immediate next work:
 
 1. Add richer provider and endpoint APIs.
-2. Add dashboard views for stored monitors and reports.
-3. Move aggregation calculations into the worker.
-4. Add quorum-aware aggregate windows.
+2. Add dashboard views for stored monitors, reports, and aggregate windows.
+3. Add reference-provider consensus for block freshness.
+4. Add scheduled reprocessing controls.
 5. Add Merkle batching for accepted reports.

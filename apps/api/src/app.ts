@@ -73,6 +73,13 @@ export function buildApp(options: AppOptions) {
 
   app.get("/summary", async () => options.store.summary());
 
+  app.get("/aggregates", async (request) => {
+    const limit = Number((request.query as { limit?: string }).limit ?? 50);
+    const safeLimit = Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 500) : 50;
+    const aggregates = await options.store.recentAggregateWindows(safeLimit);
+    return { ok: true, aggregates };
+  });
+
   app.get("/metrics", async (_request, reply) => {
     const summary = await options.store.summary();
     const lines = [
@@ -97,6 +104,9 @@ export function buildApp(options: AppOptions) {
       "# HELP rpc_sla_reports_stored_total Reports stored in PostgreSQL.",
       "# TYPE rpc_sla_reports_stored_total gauge",
       `rpc_sla_reports_stored_total ${summary.reports}`,
+      "# HELP rpc_sla_aggregate_windows_total Aggregate windows stored in PostgreSQL.",
+      "# TYPE rpc_sla_aggregate_windows_total gauge",
+      `rpc_sla_aggregate_windows_total ${summary.aggregateWindows}`,
       "",
     ];
 

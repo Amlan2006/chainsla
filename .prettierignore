@@ -1,6 +1,9 @@
 node_modules
 dist
 .next
+.next*
+**/.next
+**/.next*
 coverage
 contracts/out
 contracts/cache

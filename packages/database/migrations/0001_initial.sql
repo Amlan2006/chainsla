@@ -87,3 +87,30 @@ CREATE INDEX IF NOT EXISTS monitoring_reports_endpoint_window_idx
 
 CREATE INDEX IF NOT EXISTS monitoring_reports_monitor_received_idx
   ON monitoring_reports (monitor_id, received_at DESC);
+
+CREATE TABLE IF NOT EXISTS aggregate_windows (
+  id BIGSERIAL PRIMARY KEY,
+  endpoint_id TEXT NOT NULL,
+  check_type TEXT NOT NULL,
+  window_start BIGINT NOT NULL,
+  window_end BIGINT NOT NULL,
+  monitor_count INTEGER NOT NULL,
+  valid_report_count INTEGER NOT NULL,
+  success_rate DOUBLE PRECISION NOT NULL,
+  error_rate DOUBLE PRECISION NOT NULL,
+  median_latency_ms DOUBLE PRECISION,
+  p50_latency_ms DOUBLE PRECISION,
+  p95_latency_ms DOUBLE PRECISION,
+  p99_latency_ms DOUBLE PRECISION,
+  median_block_number DOUBLE PRECISION,
+  median_block_delay DOUBLE PRECISION,
+  status TEXT NOT NULL,
+  excluded_report_count INTEGER NOT NULL DEFAULT 0,
+  metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (endpoint_id, check_type, window_start)
+);
+
+CREATE INDEX IF NOT EXISTS aggregate_windows_endpoint_window_idx
+  ON aggregate_windows (endpoint_id, check_type, window_start DESC);
