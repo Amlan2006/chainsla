@@ -119,6 +119,57 @@ export interface AggregateWindowInsert {
   metadata: Record<string, unknown>;
 }
 
+export interface ProviderDirectoryItem {
+  providerId: string;
+  name: string;
+  endpointCount: number;
+  bestStatus: string;
+  averageSuccessRate?: number;
+  medianLatencyMs?: number;
+  p95LatencyMs?: number;
+}
+
+export interface EndpointPerformanceItem {
+  endpointId: string;
+  providerName?: string;
+  networkName?: string;
+  latestStatus: string;
+  checkCount: number;
+  monitorCount: number;
+  successRate?: number;
+  errorRate?: number;
+  medianLatencyMs?: number;
+  p95LatencyMs?: number;
+  latestBlockNumber?: number;
+  windowStart?: number;
+  windowEnd?: number;
+}
+
+export interface MonitorHealthItem {
+  id: string;
+  region: string;
+  country: string;
+  cloudProvider: string;
+  asn: string;
+  status: string;
+  softwareVersion?: string;
+  lastSeenAt?: string;
+  reportCount: number;
+  acceptedReportCount: number;
+}
+
+export interface RecentReportItem {
+  reportId: string;
+  monitorId: string;
+  endpointId: string;
+  checkType: string;
+  latencyMs: number;
+  success: boolean;
+  accepted: boolean;
+  rejectionReason?: string;
+  receivedAt: string;
+}
+
 export function loadDatabaseConfig(env: NodeJS.ProcessEnv = process.env): DatabaseConfig {
   const databaseUrl = env.DATABASE_URL;
 
@@ -603,6 +654,268 @@ export class Store {
       status: row.status,
       excludedReportCount: row.excluded_report_count,
       metadata: row.metadata_json,
+    }));
+  }
+
+  async providerDirectory(limit: number): Promise<ProviderDirectoryItem[]> {
+    if (!this.pool) {
+      return [];
+    }
+
+    const result = await this.pool.query<{
+      provider_id: string;
+      name: string;
+      endpoint_count: string;
+      best_status: string | null;
+      average_success_rate: number | null;
+      median_latency_ms: number | null;
+      p95_latency_ms: number | null;
+    }>(
+      `
+      WITH endpoint_sources AS (
+        SELECT e.id AS endpoint_id, e.provider_id, p.name
+        FROM rpc_endpoints e
+        LEFT JOIN providers p ON p.id = e.provider_id
+        UNION
+        SELECT DISTINCT aw.endpoint_id, 'unregistered' AS provider_id, 'Unregistered Provider' AS name
+        FROM aggregate_windows aw
+        WHERE NOT EXISTS (
+          SELECT 1 FROM rpc_endpoints e WHERE e.id = aw.endpoint_id
+        )
+      ),
+      latest AS (
+        SELECT DISTINCT ON (endpoint_id, check_type)
+          endpoint_id,
+          check_type,
+          status,
+          success_rate,
+          median_latency_ms,
+          p95_latency_ms
+        FROM aggregate_windows
+        ORDER BY endpoint_id, check_type, window_start DESC
+      )
+      SELECT
+        es.provider_id,
+        COALESCE(es.name, es.provider_id) AS name,
+        count(DISTINCT es.endpoint_id)::text AS endpoint_count,
+        CASE
+          WHEN bool_or(latest.status = 'healthy') THEN 'healthy'
+          WHEN bool_or(latest.status = 'degraded') THEN 'degraded'
+          WHEN bool_or(latest.status = 'down') THEN 'down'
+          WHEN bool_or(latest.status = 'inconclusive') THEN 'inconclusive'
+          ELSE 'unknown'
+        END AS best_status,
+        avg(latest.success_rate) AS average_success_rate,
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY latest.median_latency_ms)
+          FILTER (WHERE latest.median_latency_ms IS NOT NULL) AS median_latency_ms,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY latest.p95_latency_ms)
+          FILTER (WHERE latest.p95_latency_ms IS NOT NULL) AS p95_latency_ms
+      FROM endpoint_sources es
+      LEFT JOIN latest ON latest.endpoint_id = es.endpoint_id
+      GROUP BY es.provider_id, es.name
+      ORDER BY endpoint_count DESC, name
+      LIMIT $1
+      `,
+      [limit]
+    );
+
+    return result.rows.map((row) => ({
+      providerId: row.provider_id,
+      name: row.name,
+      endpointCount: Number(row.endpoint_count),
+      bestStatus: row.best_status ?? "unknown",
+      averageSuccessRate: row.average_success_rate ?? undefined,
+      medianLatencyMs: row.median_latency_ms ?? undefined,
+      p95LatencyMs: row.p95_latency_ms ?? undefined,
+    }));
+  }
+
+  async endpointPerformance(limit: number): Promise<EndpointPerformanceItem[]> {
+    if (!this.pool) {
+      return [];
+    }
+
+    const result = await this.pool.query<{
+      endpoint_id: string;
+      provider_name: string | null;
+      network_name: string | null;
+      latest_status: string | null;
+      check_count: string;
+      monitor_count: number | null;
+      success_rate: number | null;
+      error_rate: number | null;
+      median_latency_ms: number | null;
+      p95_latency_ms: number | null;
+      latest_block_number: number | null;
+      window_start: string | null;
+      window_end: string | null;
+    }>(
+      `
+      WITH latest AS (
+        SELECT DISTINCT ON (endpoint_id, check_type)
+          endpoint_id,
+          check_type,
+          window_start,
+          window_end,
+          monitor_count,
+          success_rate,
+          error_rate,
+          median_latency_ms,
+          p95_latency_ms,
+          median_block_number,
+          status
+        FROM aggregate_windows
+        ORDER BY endpoint_id, check_type, window_start DESC
+      )
+      SELECT
+        latest.endpoint_id,
+        p.name AS provider_name,
+        e.network_name,
+        CASE
+          WHEN bool_or(latest.status = 'down') THEN 'down'
+          WHEN bool_or(latest.status = 'degraded') THEN 'degraded'
+          WHEN bool_or(latest.status = 'healthy') THEN 'healthy'
+          WHEN bool_or(latest.status = 'inconclusive') THEN 'inconclusive'
+          ELSE 'unknown'
+        END AS latest_status,
+        count(*)::text AS check_count,
+        max(latest.monitor_count) AS monitor_count,
+        avg(latest.success_rate) AS success_rate,
+        avg(latest.error_rate) AS error_rate,
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY latest.median_latency_ms)
+          FILTER (WHERE latest.median_latency_ms IS NOT NULL) AS median_latency_ms,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY latest.p95_latency_ms)
+          FILTER (WHERE latest.p95_latency_ms IS NOT NULL) AS p95_latency_ms,
+        max(latest.median_block_number) AS latest_block_number,
+        max(latest.window_start)::text AS window_start,
+        max(latest.window_end)::text AS window_end
+      FROM latest
+      LEFT JOIN rpc_endpoints e ON e.id = latest.endpoint_id
+      LEFT JOIN providers p ON p.id = e.provider_id
+      GROUP BY latest.endpoint_id, p.name, e.network_name
+      ORDER BY max(latest.window_start) DESC, latest.endpoint_id
+      LIMIT $1
+      `,
+      [limit]
+    );
+
+    return result.rows.map((row) => ({
+      endpointId: row.endpoint_id,
+      providerName: row.provider_name ?? undefined,
+      networkName: row.network_name ?? undefined,
+      latestStatus: row.latest_status ?? "unknown",
+      checkCount: Number(row.check_count),
+      monitorCount: row.monitor_count ?? 0,
+      successRate: row.success_rate ?? undefined,
+      errorRate: row.error_rate ?? undefined,
+      medianLatencyMs: row.median_latency_ms ?? undefined,
+      p95LatencyMs: row.p95_latency_ms ?? undefined,
+      latestBlockNumber: row.latest_block_number ?? undefined,
+      windowStart: row.window_start === null ? undefined : Number(row.window_start),
+      windowEnd: row.window_end === null ? undefined : Number(row.window_end),
+    }));
+  }
+
+  async monitorHealth(limit: number): Promise<MonitorHealthItem[]> {
+    if (!this.pool) {
+      return [];
+    }
+
+    const result = await this.pool.query<{
+      id: string;
+      region: string;
+      country: string;
+      cloud_provider: string;
+      asn: string;
+      status: string;
+      software_version: string | null;
+      last_seen_at: string | null;
+      report_count: string;
+      accepted_report_count: string;
+    }>(
+      `
+      SELECT
+        m.id,
+        m.region,
+        m.country,
+        m.cloud_provider,
+        m.asn,
+        CASE
+          WHEN m.last_seen_at IS NULL THEN 'unknown'
+          WHEN m.last_seen_at < now() - interval '2 minutes' THEN 'stale'
+          ELSE m.status
+        END AS status,
+        m.software_version,
+        m.last_seen_at::text,
+        count(r.id)::text AS report_count,
+        count(r.id) FILTER (WHERE r.accepted)::text AS accepted_report_count
+      FROM monitors m
+      LEFT JOIN monitoring_reports r ON r.monitor_id = m.id
+      GROUP BY m.id
+      ORDER BY m.last_seen_at DESC NULLS LAST, m.id
+      LIMIT $1
+      `,
+      [limit]
+    );
+
+    return result.rows.map((row) => ({
+      id: row.id,
+      region: row.region,
+      country: row.country,
+      cloudProvider: row.cloud_provider,
+      asn: row.asn,
+      status: row.status,
+      softwareVersion: row.software_version ?? undefined,
+      lastSeenAt: row.last_seen_at ?? undefined,
+      reportCount: Number(row.report_count),
+      acceptedReportCount: Number(row.accepted_report_count),
+    }));
+  }
+
+  async recentReports(limit: number): Promise<RecentReportItem[]> {
+    if (!this.pool) {
+      return [];
+    }
+
+    const result = await this.pool.query<{
+      report_uuid: string;
+      monitor_id: string;
+      endpoint_id: string;
+      check_type: string;
+      latency_ms: string;
+      success: boolean;
+      accepted: boolean;
+      rejection_reason: string | null;
+      received_at: string;
+    }>(
+      `
+      SELECT
+        report_uuid,
+        monitor_id,
+        endpoint_id,
+        check_type,
+        latency_ms::text,
+        success,
+        accepted,
+        rejection_reason,
+        received_at::text
+      FROM monitoring_reports
+      ORDER BY received_at DESC
+      LIMIT $1
+      `,
+      [limit]
+    );
+
+    return result.rows.map((row) => ({
+      reportId: row.report_uuid,
+      monitorId: row.monitor_id,
+      endpointId: row.endpoint_id,
+      checkType: row.check_type,
+      latencyMs: Number(row.latency_ms),
+      success: row.success,
+      accepted: row.accepted,
+      rejectionReason: row.rejection_reason ?? undefined,
+      receivedAt: row.received_at,
     }));
   }
 

@@ -1,6 +1,6 @@
 :root {
-  color: #17201c;
   background: #f6f7f3;
+  color: #17201c;
   font-family:
     Inter,
     ui-sans-serif,
@@ -21,7 +21,7 @@ body {
 
 main {
   min-height: 100vh;
-  padding: 32px;
+  padding: 28px;
 }
 
 .topbar {
@@ -29,7 +29,7 @@ main {
   border-bottom: 1px solid #d8ddd2;
   display: flex;
   justify-content: space-between;
-  padding-bottom: 24px;
+  padding-bottom: 22px;
 }
 
 .eyebrow {
@@ -42,18 +42,26 @@ main {
 }
 
 h1,
-h2 {
+h2,
+h3 {
   letter-spacing: 0;
   margin: 0;
 }
 
 h1 {
-  font-size: clamp(2rem, 4vw, 4.5rem);
+  font-size: clamp(2rem, 4vw, 4.25rem);
   line-height: 0.98;
 }
 
 h2 {
-  font-size: 1.2rem;
+  font-size: 1rem;
+  margin-bottom: 18px;
+}
+
+h3 {
+  font-size: 1.05rem;
+  margin-top: 12px;
+  overflow-wrap: anywhere;
 }
 
 .status {
@@ -66,50 +74,190 @@ h2 {
 
 .summary {
   display: grid;
-  gap: 16px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin: 32px 0;
+  gap: 18px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 28px 0;
 }
 
 .summary div {
   border-top: 3px solid #d65935;
-  padding: 16px 0;
+  min-height: 88px;
+  padding: 14px 0;
 }
 
 .summary span {
   color: #5f6f66;
   display: block;
-  font-size: 0.9rem;
+  font-size: 0.86rem;
 }
 
 .summary strong {
   display: block;
-  font-size: 2.25rem;
+  font-size: 2.35rem;
   margin-top: 6px;
 }
 
+.split {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(0, 1.25fr) minmax(360px, 0.75fr);
+  margin-bottom: 22px;
+}
+
+.panel,
 .tableSection {
+  border-top: 1px solid #d8ddd2;
+  padding-top: 18px;
+}
+
+.endpointGrid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.endpoint {
+  border: 1px solid #d8ddd2;
+  padding: 16px;
+}
+
+.endpoint p {
+  color: #5f6f66;
+  margin: 8px 0 0;
+}
+
+.endpoint dl {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 18px 0 0;
+}
+
+.endpoint dt {
+  color: #5f6f66;
+  font-size: 0.75rem;
+}
+
+.endpoint dd {
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.pill {
+  background: #eef1ea;
+  color: #17201c;
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 5px 8px;
+  text-transform: uppercase;
+}
+
+.healthy {
+  background: #dceade;
+  color: #183f34;
+}
+
+.degraded,
+.inconclusive {
+  background: #f6e6bd;
+  color: #604716;
+}
+
+.down,
+.stale {
+  background: #f2d0c9;
+  color: #7a2518;
+}
+
+.bars {
+  display: grid;
+  gap: 12px;
+}
+
+.barRow {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(120px, 1fr) minmax(120px, 2fr) 72px;
+}
+
+.barRow span {
+  color: #5f6f66;
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.barRow strong {
+  font-size: 0.86rem;
+  text-align: right;
+}
+
+.barTrack {
+  background: #e4e8df;
+  height: 10px;
+  overflow: hidden;
+}
+
+.barFill {
+  background: #183f34;
+  height: 100%;
+  min-width: 4px;
+}
+
+.barFill.degraded,
+.barFill.inconclusive {
+  background: #d6a33a;
+}
+
+.barFill.down,
+.barFill.stale {
+  background: #d65935;
+}
+
+.tableWrap {
   overflow-x: auto;
 }
 
 table {
   border-collapse: collapse;
-  margin-top: 16px;
-  min-width: 720px;
+  min-width: 680px;
   width: 100%;
 }
 
 th,
 td {
   border-bottom: 1px solid #d8ddd2;
-  padding: 14px 12px;
+  padding: 13px 12px;
   text-align: left;
 }
 
 th {
   color: #5f6f66;
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
+}
+
+td {
+  font-size: 0.92rem;
+}
+
+.empty {
+  border: 1px dashed #c8d0c5;
+  color: #5f6f66;
+  margin: 0;
+  padding: 18px;
+}
+
+@media (max-width: 960px) {
+  .summary,
+  .split {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
@@ -123,7 +271,15 @@ th {
     flex-direction: column;
   }
 
-  .summary {
+  .endpoint dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .barRow {
     grid-template-columns: 1fr;
+  }
+
+  .barRow strong {
+    text-align: left;
   }
 }

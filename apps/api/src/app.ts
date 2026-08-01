@@ -73,9 +73,32 @@ export function buildApp(options: AppOptions) {
 
   app.get("/summary", async () => options.store.summary());
 
+  app.get("/providers", async (request) => {
+    const limit = parseLimit(request.query, 50, 200);
+    const providers = await options.store.providerDirectory(limit);
+    return { ok: true, providers };
+  });
+
+  app.get("/endpoints/performance", async (request) => {
+    const limit = parseLimit(request.query, 50, 200);
+    const endpoints = await options.store.endpointPerformance(limit);
+    return { ok: true, endpoints };
+  });
+
+  app.get("/monitors", async (request) => {
+    const limit = parseLimit(request.query, 50, 200);
+    const monitors = await options.store.monitorHealth(limit);
+    return { ok: true, monitors };
+  });
+
+  app.get("/reports", async (request) => {
+    const limit = parseLimit(request.query, 50, 200);
+    const reports = await options.store.recentReports(limit);
+    return { ok: true, reports };
+  });
+
   app.get("/aggregates", async (request) => {
-    const limit = Number((request.query as { limit?: string }).limit ?? 50);
-    const safeLimit = Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 500) : 50;
+    const safeLimit = parseLimit(request.query, 50, 500);
     const aggregates = await options.store.recentAggregateWindows(safeLimit);
     return { ok: true, aggregates };
   });
@@ -311,4 +334,10 @@ function authenticateMonitorRequest(
   }
 
   return undefined;
+}
+
+function parseLimit(query: unknown, fallback: number, max: number): number {
+  const raw = (query as { limit?: string } | undefined)?.limit;
+  const limit = Number(raw ?? fallback);
+  return Number.isFinite(limit) ? Math.min(Math.max(limit, 1), max) : fallback;
 }
