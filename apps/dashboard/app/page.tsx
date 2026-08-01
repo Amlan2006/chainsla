@@ -4,6 +4,7 @@ interface Summary {
   reports: number;
   acceptedReports: number;
   aggregateWindows: number;
+  reportBatches: number;
 }
 
 interface ProviderItem {
@@ -85,6 +86,7 @@ const emptySummary: Summary = {
   reports: 0,
   acceptedReports: 0,
   aggregateWindows: 0,
+  reportBatches: 0,
 };
 
 async function getDashboardData(): Promise<DashboardData> {
@@ -139,6 +141,7 @@ export default async function HomePage() {
         <Metric label="Reports" value={data.summary.reports} />
         <Metric label="Accepted" value={data.summary.acceptedReports} />
         <Metric label="Aggregates" value={data.summary.aggregateWindows} />
+        <Metric label="Batches" value={data.summary.reportBatches} />
       </section>
 
       <section className="split">

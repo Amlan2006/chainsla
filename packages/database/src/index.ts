@@ -170,6 +170,49 @@ export interface RecentReportItem {
   receivedAt: string;
 }
 
+export interface CommittableReportRow {
+  reportId: string;
+  endpointId: string;
+  monitorAddress?: `0x${string}`;
+  payloadHash: `0x${string}`;
+  measurementWindow: number;
+}
+
+export interface ReportBatchInsert {
+  batchId: string;
+  merkleRoot: `0x${string}`;
+  startWindow: number;
+  endWindow: number;
+  reportCount: number;
+  reports: Array<{
+    reportId: string;
+    leafIndex: number;
+    leafHash: `0x${string}`;
+  }>;
+}
+
+export interface ReportBatchItem {
+  batchId: string;
+  merkleRoot: `0x${string}`;
+  startWindow: number;
+  endWindow: number;
+  reportCount: number;
+  status: string;
+  txHash?: string;
+  createdAt: string;
+  publishedAt?: string;
+}
+
+export interface ReportProofData {
+  batch: ReportBatchItem;
+  leaves: `0x${string}`[];
+  report: {
+    reportId: string;
+    leafHash: `0x${string}`;
+    leafIndex: number;
+  };
+}
+
 export function loadDatabaseConfig(env: NodeJS.ProcessEnv = process.env): DatabaseConfig {
   const databaseUrl = env.DATABASE_URL;
 
@@ -919,12 +962,252 @@ export class Store {
     }));
   }
 
+  async uncommittedAcceptedReports(limit: number): Promise<CommittableReportRow[]> {
+    if (!this.pool) {
+      return [];
+    }
+
+    const result = await this.pool.query<{
+      report_uuid: string;
+      endpoint_id: string;
+      recovered_address: string | null;
+      payload_hash: string;
+      measurement_window: string;
+    }>(
+      `
+      SELECT report_uuid, endpoint_id, recovered_address, payload_hash, measurement_window::text
+      FROM monitoring_reports
+      WHERE accepted
+        AND committed_at IS NULL
+      ORDER BY measurement_window, report_uuid
+      LIMIT $1
+      `,
+      [limit]
+    );
+
+    return result.rows.map((row) => ({
+      reportId: row.report_uuid,
+      endpointId: row.endpoint_id,
+      monitorAddress: normalizeAddress(row.recovered_address),
+      payloadHash: row.payload_hash as `0x${string}`,
+      measurementWindow: Number(row.measurement_window),
+    }));
+  }
+
+  async createReportBatch(input: ReportBatchInsert): Promise<void> {
+    if (!this.pool || input.reports.length === 0) {
+      return;
+    }
+
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `
+        INSERT INTO report_batches (
+          batch_id, merkle_root, start_window, end_window, report_count, status
+        )
+        VALUES ($1, $2, $3, $4, $5, 'built')
+        ON CONFLICT (batch_id) DO NOTHING
+        `,
+        [input.batchId, input.merkleRoot, input.startWindow, input.endWindow, input.reportCount]
+      );
+
+      for (const report of input.reports) {
+        await client.query(
+          `
+          INSERT INTO report_batch_reports (batch_id, report_uuid, leaf_index, leaf_hash)
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (batch_id, report_uuid) DO NOTHING
+          `,
+          [input.batchId, report.reportId, report.leafIndex, report.leafHash]
+        );
+      }
+
+      await client.query(
+        `
+        UPDATE monitoring_reports
+        SET committed_at = now()
+        WHERE report_uuid = ANY($1::text[])
+        `,
+        [input.reports.map((report) => report.reportId)]
+      );
+
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async markReportBatchPublished(batchId: string, txHash: string): Promise<void> {
+    if (!this.pool) {
+      return;
+    }
+
+    await this.pool.query(
+      `
+      UPDATE report_batches
+      SET status = 'published',
+        tx_hash = $2,
+        published_at = now()
+      WHERE batch_id = $1
+      `,
+      [batchId, txHash]
+    );
+  }
+
+  async recentReportBatches(limit: number): Promise<ReportBatchItem[]> {
+    if (!this.pool) {
+      return [];
+    }
+
+    const result = await this.pool.query<{
+      batch_id: string;
+      merkle_root: string;
+      start_window: string;
+      end_window: string;
+      report_count: number;
+      status: string;
+      tx_hash: string | null;
+      created_at: string;
+      published_at: string | null;
+    }>(
+      `
+      SELECT
+        batch_id,
+        merkle_root,
+        start_window::text,
+        end_window::text,
+        report_count,
+        status,
+        tx_hash,
+        created_at::text,
+        published_at::text
+      FROM report_batches
+      ORDER BY created_at DESC
+      LIMIT $1
+      `,
+      [limit]
+    );
+
+    return result.rows.map(mapReportBatch);
+  }
+
+  async reportBatch(batchId: string): Promise<ReportBatchItem | undefined> {
+    if (!this.pool) {
+      return undefined;
+    }
+
+    const result = await this.pool.query<{
+      batch_id: string;
+      merkle_root: string;
+      start_window: string;
+      end_window: string;
+      report_count: number;
+      status: string;
+      tx_hash: string | null;
+      created_at: string;
+      published_at: string | null;
+    }>(
+      `
+      SELECT
+        batch_id,
+        merkle_root,
+        start_window::text,
+        end_window::text,
+        report_count,
+        status,
+        tx_hash,
+        created_at::text,
+        published_at::text
+      FROM report_batches
+      WHERE batch_id = $1
+      `,
+      [batchId]
+    );
+
+    const row = result.rows[0];
+    return row ? mapReportBatch(row) : undefined;
+  }
+
+  async reportProofData(reportId: string): Promise<ReportProofData | undefined> {
+    if (!this.pool) {
+      return undefined;
+    }
+
+    const reportResult = await this.pool.query<{
+      batch_id: string;
+      report_uuid: string;
+      leaf_index: number;
+      leaf_hash: string;
+      merkle_root: string;
+      start_window: string;
+      end_window: string;
+      report_count: number;
+      status: string;
+      tx_hash: string | null;
+      created_at: string;
+      published_at: string | null;
+    }>(
+      `
+      SELECT
+        b.batch_id,
+        br.report_uuid,
+        br.leaf_index,
+        br.leaf_hash,
+        b.merkle_root,
+        b.start_window::text,
+        b.end_window::text,
+        b.report_count,
+        b.status,
+        b.tx_hash,
+        b.created_at::text,
+        b.published_at::text
+      FROM report_batch_reports br
+      JOIN report_batches b ON b.batch_id = br.batch_id
+      WHERE br.report_uuid = $1
+      ORDER BY b.created_at DESC
+      LIMIT 1
+      `,
+      [reportId]
+    );
+
+    const reportRow = reportResult.rows[0];
+    if (!reportRow) {
+      return undefined;
+    }
+
+    const leavesResult = await this.pool.query<{ leaf_hash: string }>(
+      `
+      SELECT leaf_hash
+      FROM report_batch_reports
+      WHERE batch_id = $1
+      ORDER BY leaf_index
+      `,
+      [reportRow.batch_id]
+    );
+
+    return {
+      batch: mapReportBatch(reportRow),
+      leaves: leavesResult.rows.map((row) => row.leaf_hash as `0x${string}`),
+      report: {
+        reportId: reportRow.report_uuid,
+        leafHash: reportRow.leaf_hash as `0x${string}`,
+        leafIndex: reportRow.leaf_index,
+      },
+    };
+  }
+
   async summary(): Promise<{
     monitors: number;
     endpoints: number;
     reports: number;
     acceptedReports: number;
     aggregateWindows: number;
+    reportBatches: number;
   }> {
     if (!this.pool) {
       return {
@@ -933,6 +1216,7 @@ export class Store {
         reports: 0,
         acceptedReports: 0,
         aggregateWindows: 0,
+        reportBatches: 0,
       };
     }
 
@@ -942,13 +1226,15 @@ export class Store {
       reports: string;
       accepted_reports: string;
       aggregate_windows: string;
+      report_batches: string;
     }>(`
       SELECT
         (SELECT count(*) FROM monitors)::text AS monitors,
         (SELECT count(*) FROM rpc_endpoints)::text AS endpoints,
         (SELECT count(*) FROM monitoring_reports)::text AS reports,
         (SELECT count(*) FROM monitoring_reports WHERE accepted)::text AS accepted_reports,
-        (SELECT count(*) FROM aggregate_windows)::text AS aggregate_windows
+        (SELECT count(*) FROM aggregate_windows)::text AS aggregate_windows,
+        (SELECT count(*) FROM report_batches)::text AS report_batches
     `);
 
     const row = result.rows[0];
@@ -958,6 +1244,38 @@ export class Store {
       reports: Number(row?.reports ?? 0),
       acceptedReports: Number(row?.accepted_reports ?? 0),
       aggregateWindows: Number(row?.aggregate_windows ?? 0),
+      reportBatches: Number(row?.report_batches ?? 0),
     };
   }
+}
+
+function normalizeAddress(value: string | null): `0x${string}` | undefined {
+  if (!value || !/^0x[a-fA-F0-9]{40}$/u.test(value)) {
+    return undefined;
+  }
+  return value.toLowerCase() as `0x${string}`;
+}
+
+function mapReportBatch(row: {
+  batch_id: string;
+  merkle_root: string;
+  start_window: string;
+  end_window: string;
+  report_count: number;
+  status: string;
+  tx_hash: string | null;
+  created_at: string;
+  published_at: string | null;
+}): ReportBatchItem {
+  return {
+    batchId: row.batch_id,
+    merkleRoot: row.merkle_root as `0x${string}`,
+    startWindow: Number(row.start_window),
+    endWindow: Number(row.end_window),
+    reportCount: row.report_count,
+    status: row.status,
+    txHash: row.tx_hash ?? undefined,
+    createdAt: row.created_at,
+    publishedAt: row.published_at ?? undefined,
+  };
 }

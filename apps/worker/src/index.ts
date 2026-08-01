@@ -1,5 +1,8 @@
 import pino from "pino";
 import { Store } from "@rpc-sla/database";
+import { buildMerkleTree, reportLeaf } from "@rpc-sla/merkle";
+import { createWalletClient, defineChain, http, keccak256, stringToHex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 
 import { aggregateReports } from "./aggregation.js";
 import { loadWorkerConfig } from "./config.js";
@@ -9,6 +12,22 @@ const config = loadWorkerConfig();
 const store = new Store({ databaseUrl: config.databaseUrl });
 
 let shuttingDown = false;
+
+const reportCommitmentAbi = [
+  {
+    type: "function",
+    name: "publishBatch",
+    inputs: [
+      { name: "batchId", type: "bytes32" },
+      { name: "merkleRoot", type: "bytes32" },
+      { name: "startTime", type: "uint64" },
+      { name: "endTime", type: "uint64" },
+      { name: "reportCount", type: "uint32" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+] as const;
 
 async function runAggregationOnce(): Promise<void> {
   if (!config.databaseUrl) {
@@ -39,6 +58,114 @@ async function runAggregationOnce(): Promise<void> {
   );
 }
 
+async function runCommitmentOnce(): Promise<void> {
+  if (!config.databaseUrl) {
+    return;
+  }
+
+  const reports = await store.uncommittedAcceptedReports(config.commitmentBatchSize);
+  if (reports.length === 0) {
+    logger.info("commitment pass skipped; no uncommitted reports");
+    return;
+  }
+
+  const reportLeaves = reports.map((report) => ({
+    reportId: report.reportId,
+    leafHash: reportLeaf({
+      reportId: report.reportId,
+      monitorAddress: report.monitorAddress,
+      endpointId: report.endpointId,
+      payloadHash: report.payloadHash,
+      measurementWindow: report.measurementWindow,
+    }),
+  }));
+  const tree = buildMerkleTree(reportLeaves.map((report) => report.leafHash));
+  const startWindow = Math.min(...reports.map((report) => report.measurementWindow));
+  const endWindow = Math.max(...reports.map((report) => report.measurementWindow));
+  const batchId = keccak256(
+    stringToHex(`${tree.root}:${reports.length}:${startWindow}:${endWindow}`)
+  );
+
+  await store.createReportBatch({
+    batchId,
+    merkleRoot: tree.root,
+    startWindow,
+    endWindow,
+    reportCount: reports.length,
+    reports: reportLeaves.map((report) => ({
+      reportId: report.reportId,
+      leafHash: report.leafHash,
+      leafIndex: tree.leaves.findIndex(
+        (leaf) => leaf.toLowerCase() === report.leafHash.toLowerCase()
+      ),
+    })),
+  });
+
+  const txHash = await publishBatchIfConfigured({
+    batchId,
+    merkleRoot: tree.root,
+    startWindow,
+    endWindow,
+    reportCount: reports.length,
+  });
+  if (txHash) {
+    await store.markReportBatchPublished(batchId, txHash);
+  }
+
+  logger.info(
+    {
+      batchId,
+      merkleRoot: tree.root,
+      reports: reports.length,
+      txHash,
+    },
+    "report commitment batch built"
+  );
+}
+
+async function publishBatchIfConfigured(input: {
+  batchId: `0x${string}`;
+  merkleRoot: `0x${string}`;
+  startWindow: number;
+  endWindow: number;
+  reportCount: number;
+}): Promise<`0x${string}` | undefined> {
+  if (!config.reportCommitmentContract || !config.publisherPrivateKey || !config.chainRpcUrl) {
+    return undefined;
+  }
+
+  const account = privateKeyToAccount(config.publisherPrivateKey as `0x${string}`);
+  const chain = defineChain({
+    id: config.chainId,
+    name: "Configured EVM",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    rpcUrls: {
+      default: {
+        http: [config.chainRpcUrl],
+      },
+    },
+  });
+  const client = createWalletClient({
+    account,
+    chain,
+    transport: http(config.chainRpcUrl),
+  });
+
+  return client.writeContract({
+    address: config.reportCommitmentContract as `0x${string}`,
+    chain,
+    abi: reportCommitmentAbi,
+    functionName: "publishBatch",
+    args: [
+      input.batchId,
+      input.merkleRoot,
+      BigInt(input.startWindow),
+      BigInt(input.endWindow),
+      input.reportCount,
+    ],
+  });
+}
+
 async function main(): Promise<void> {
   logger.info(
     {
@@ -51,10 +178,11 @@ async function main(): Promise<void> {
 
   await store.migrate();
   await runAggregationOnce();
+  await runCommitmentOnce();
 
   const interval = setInterval(() => {
-    runAggregationOnce().catch((error: unknown) => {
-      logger.error({ error }, "aggregation pass failed");
+    Promise.all([runAggregationOnce(), runCommitmentOnce()]).catch((error: unknown) => {
+      logger.error({ error }, "worker pass failed");
     });
   }, config.aggregationIntervalMs);
 

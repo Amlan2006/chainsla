@@ -114,3 +114,27 @@ CREATE TABLE IF NOT EXISTS aggregate_windows (
 
 CREATE INDEX IF NOT EXISTS aggregate_windows_endpoint_window_idx
   ON aggregate_windows (endpoint_id, check_type, window_start DESC);
+
+CREATE TABLE IF NOT EXISTS report_batches (
+  batch_id TEXT PRIMARY KEY,
+  merkle_root TEXT NOT NULL,
+  start_window BIGINT NOT NULL,
+  end_window BIGINT NOT NULL,
+  report_count INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'built',
+  tx_hash TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  published_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS report_batch_reports (
+  batch_id TEXT NOT NULL REFERENCES report_batches(batch_id) ON DELETE CASCADE,
+  report_uuid TEXT NOT NULL REFERENCES monitoring_reports(report_uuid) ON DELETE CASCADE,
+  leaf_index INTEGER NOT NULL,
+  leaf_hash TEXT NOT NULL,
+  PRIMARY KEY (batch_id, report_uuid),
+  UNIQUE (batch_id, leaf_index)
+);
+
+CREATE INDEX IF NOT EXISTS report_batch_reports_report_idx
+  ON report_batch_reports (report_uuid);

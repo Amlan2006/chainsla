@@ -1,6 +1,7 @@
 import cors from "@fastify/cors";
 import swagger from "@fastify/swagger";
 import Fastify from "fastify";
+import { buildMerkleTree, getMerkleProof, verifyMerkleProof } from "@rpc-sla/merkle";
 
 import type { ApiConfig } from "./config.js";
 import {
@@ -103,6 +104,42 @@ export function buildApp(options: AppOptions) {
     return { ok: true, aggregates };
   });
 
+  app.get("/report-batches", async (request) => {
+    const safeLimit = parseLimit(request.query, 50, 500);
+    const batches = await options.store.recentReportBatches(safeLimit);
+    return { ok: true, batches };
+  });
+
+  app.get("/report-batches/:batchId", async (request, reply) => {
+    const { batchId } = request.params as { batchId: string };
+    const batch = await options.store.reportBatch(batchId);
+    if (!batch) {
+      return reply.code(404).send({ ok: false, error: "batch_not_found" });
+    }
+    return { ok: true, batch };
+  });
+
+  app.get("/reports/:reportId/proof", async (request, reply) => {
+    const { reportId } = request.params as { reportId: string };
+    const proofData = await options.store.reportProofData(reportId);
+    if (!proofData) {
+      return reply.code(404).send({ ok: false, error: "report_proof_not_found" });
+    }
+
+    const tree = buildMerkleTree(proofData.leaves);
+    const proof = getMerkleProof(tree, proofData.report.leafHash);
+
+    return {
+      ok: true,
+      reportId,
+      batchId: proofData.batch.batchId,
+      merkleRoot: proofData.batch.merkleRoot,
+      leaf: proofData.report.leafHash,
+      proof,
+      verified: verifyMerkleProof(proofData.report.leafHash, proof, proofData.batch.merkleRoot),
+    };
+  });
+
   app.get("/metrics", async (_request, reply) => {
     const summary = await options.store.summary();
     const lines = [
@@ -130,6 +167,9 @@ export function buildApp(options: AppOptions) {
       "# HELP rpc_sla_aggregate_windows_total Aggregate windows stored in PostgreSQL.",
       "# TYPE rpc_sla_aggregate_windows_total gauge",
       `rpc_sla_aggregate_windows_total ${summary.aggregateWindows}`,
+      "# HELP rpc_sla_report_batches_total Report Merkle batches stored in PostgreSQL.",
+      "# TYPE rpc_sla_report_batches_total gauge",
+      `rpc_sla_report_batches_total ${summary.reportBatches}`,
       "",
     ];
 
