@@ -63,9 +63,35 @@ export const reportEnvelopeSchema = z.object({
   signature: z.string().regex(/^0x[a-fA-F0-9]{130}$/u),
 });
 
+export const slaCreateSchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    providerId: z.string().min(1),
+    customerId: z.string().min(1),
+    providerAddress: z
+      .string()
+      .regex(/^0x[a-fA-F0-9]{40}$/u)
+      .optional(),
+    customerAddress: z
+      .string()
+      .regex(/^0x[a-fA-F0-9]{40}$/u)
+      .optional(),
+    endpointId: z.string().min(1),
+    periodStart: z.number().int().nonnegative(),
+    periodEnd: z.number().int().positive(),
+    minimumUptime: z.number().min(0).max(1),
+    maximumP95LatencyMs: z.number().nonnegative().optional(),
+    maximumErrorRate: z.number().min(0).max(1).optional(),
+    maximumBlockDelay: z.number().nonnegative().optional(),
+  })
+  .refine((value) => value.periodEnd > value.periodStart, {
+    message: "periodEnd must be after periodStart",
+  });
+
 export type Heartbeat = z.infer<typeof heartbeatSchema>;
 export type MonitorRegistration = z.infer<typeof monitorRegistrationSchema>;
 export type EndpointRegistration = z.infer<typeof endpointRegistrationSchema>;
 export type JobRegistration = z.infer<typeof jobRegistrationSchema>;
 export type ReportEnvelope = z.infer<typeof reportEnvelopeSchema>;
 export type ReportPayload = z.infer<typeof reportPayloadSchema>;
+export type SlaCreate = z.infer<typeof slaCreateSchema>;

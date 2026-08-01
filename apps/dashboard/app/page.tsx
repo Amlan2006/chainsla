@@ -5,6 +5,8 @@ interface Summary {
   acceptedReports: number;
   aggregateWindows: number;
   reportBatches: number;
+  slas: number;
+  slaEvaluations: number;
 }
 
 interface ProviderItem {
@@ -78,6 +80,30 @@ interface DashboardData {
   aggregates: AggregateItem[];
   monitors: MonitorItem[];
   reports: ReportItem[];
+  slas: SlaItem[];
+  apiUrl: string;
+}
+
+interface SlaItem {
+  id: string;
+  providerId: string;
+  customerId: string;
+  endpointId: string;
+  periodStart: number;
+  periodEnd: number;
+  minimumUptime: number;
+  maximumP95LatencyMs?: number;
+  status: string;
+  termsHash: string;
+  evaluation?: {
+    evaluationId: string;
+    outcome: string;
+    evidenceRoot: string;
+    aggregateCount: number;
+    metrics: { uptime?: number; p95LatencyMs?: number };
+    reasons: string[];
+    txHash?: string;
+  };
 }
 
 const emptySummary: Summary = {
@@ -87,21 +113,24 @@ const emptySummary: Summary = {
   acceptedReports: 0,
   aggregateWindows: 0,
   reportBatches: 0,
+  slas: 0,
+  slaEvaluations: 0,
 };
 
 async function getDashboardData(): Promise<DashboardData> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
-  const [summary, providers, endpoints, aggregates, monitors, reports] = await Promise.all([
+  const [summary, providers, endpoints, aggregates, monitors, reports, slas] = await Promise.all([
     fetchJson<Summary>(`${apiUrl}/summary`, emptySummary),
     fetchList<ProviderItem>(`${apiUrl}/providers`, "providers"),
     fetchList<EndpointItem>(`${apiUrl}/endpoints/performance`, "endpoints"),
     fetchList<AggregateItem>(`${apiUrl}/aggregates?limit=18`, "aggregates"),
     fetchList<MonitorItem>(`${apiUrl}/monitors`, "monitors"),
     fetchList<ReportItem>(`${apiUrl}/reports?limit=12`, "reports"),
+    fetchList<SlaItem>(`${apiUrl}/slas?limit=20`, "slas"),
   ]);
 
-  return { summary, providers, endpoints, aggregates, monitors, reports };
+  return { summary, providers, endpoints, aggregates, monitors, reports, slas, apiUrl };
 }
 
 async function fetchJson<T>(url: string, fallback: T): Promise<T> {
@@ -133,7 +162,7 @@ export default async function HomePage() {
           <p className="eyebrow">RPC SLA Platform</p>
           <h1>Provider Performance</h1>
         </div>
-        <span className="status">Phase 4</span>
+        <span className="status">Phase 6</span>
       </header>
 
       <section className="summary" aria-label="Monitoring summary">
@@ -142,6 +171,84 @@ export default async function HomePage() {
         <Metric label="Accepted" value={data.summary.acceptedReports} />
         <Metric label="Aggregates" value={data.summary.aggregateWindows} />
         <Metric label="Batches" value={data.summary.reportBatches} />
+        <Metric label="SLAs" value={data.summary.slas} />
+        <Metric label="Evaluations" value={data.summary.slaEvaluations} />
+      </section>
+
+      <section className="tableSection slaSection">
+        <div className="sectionHeading">
+          <div>
+            <p className="eyebrow">Contract performance</p>
+            <h2>SLA Evaluations</h2>
+          </div>
+          <span>{data.slas.length} agreements</span>
+        </div>
+        {data.slas.length === 0 ? (
+          <EmptyState />
+        ) : (
+          <div className="slaGrid">
+            {data.slas.map((sla) => (
+              <article className="sla" key={sla.id}>
+                <div className="slaTitle">
+                  <div>
+                    <span className={`pill ${sla.evaluation?.outcome ?? sla.status}`}>
+                      {sla.evaluation?.outcome ?? sla.status}
+                    </span>
+                    <h3>{sla.id}</h3>
+                    <p>
+                      {sla.providerId} / {sla.customerId}
+                    </p>
+                  </div>
+                  {sla.evaluation ? (
+                    <a
+                      className="download"
+                      href={`${data.apiUrl}/slas/${encodeURIComponent(sla.id)}/report`}
+                    >
+                      Download report
+                    </a>
+                  ) : null}
+                </div>
+                <dl>
+                  <div>
+                    <dt>Endpoint</dt>
+                    <dd>{sla.endpointId}</dd>
+                  </div>
+                  <div>
+                    <dt>Period</dt>
+                    <dd>{formatPeriod(sla.periodStart, sla.periodEnd)}</dd>
+                  </div>
+                  <div>
+                    <dt>Required uptime</dt>
+                    <dd>{formatPercent(sla.minimumUptime)}</dd>
+                  </div>
+                  <div>
+                    <dt>Measured uptime</dt>
+                    <dd>{formatPercent(sla.evaluation?.metrics.uptime)}</dd>
+                  </div>
+                  <div>
+                    <dt>p95 limit</dt>
+                    <dd>{formatMs(sla.maximumP95LatencyMs)}</dd>
+                  </div>
+                  <div>
+                    <dt>Measured p95</dt>
+                    <dd>{formatMs(sla.evaluation?.metrics.p95LatencyMs)}</dd>
+                  </div>
+                </dl>
+                {sla.evaluation?.reasons.length ? (
+                  <ul className="reasons">
+                    {sla.evaluation.reasons.map((reason) => (
+                      <li key={reason}>{reason}</li>
+                    ))}
+                  </ul>
+                ) : null}
+                <div className="evidence">
+                  <span>Evidence root</span>
+                  <code>{sla.evaluation?.evidenceRoot ?? "Evaluation pending"}</code>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="split">
@@ -342,6 +449,16 @@ function formatDate(value: string): string {
     return "-";
   }
   return date.toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatPeriod(start: number, end: number): string {
+  const options: Intl.DateTimeFormatOptions = {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  };
+  return `${new Date(start * 1000).toLocaleString("en", options)} - ${new Date(end * 1000).toLocaleString("en", options)}`;
 }
 
 function shortCheck(value: string): string {

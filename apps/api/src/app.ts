@@ -1,7 +1,10 @@
+import { randomUUID } from "node:crypto";
+
 import cors from "@fastify/cors";
 import swagger from "@fastify/swagger";
 import Fastify from "fastify";
 import { buildMerkleTree, getMerkleProof, verifyMerkleProof } from "@rpc-sla/merkle";
+import { slaTermsHash } from "@rpc-sla/sla";
 
 import type { ApiConfig } from "./config.js";
 import {
@@ -10,6 +13,7 @@ import {
   jobRegistrationSchema,
   monitorRegistrationSchema,
   reportEnvelopeSchema,
+  slaCreateSchema,
 } from "./schemas.js";
 import { validateReportEnvelope, validateReportFreshness } from "./report-validation.js";
 import type { Store } from "./store.js";
@@ -119,6 +123,88 @@ export function buildApp(options: AppOptions) {
     return { ok: true, batch };
   });
 
+  app.post("/slas", async (request, reply) => {
+    const parsed = slaCreateSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, error: "invalid_sla", issues: parsed.error.issues });
+    }
+
+    const terms = { ...parsed.data, id: parsed.data.id ?? randomUUID() };
+    try {
+      const sla = await options.store.createSla({
+        ...terms,
+        termsHash: slaTermsHash(terms),
+      });
+      return reply.code(201).send({ ok: true, sla });
+    } catch (error) {
+      request.log.warn({ error, slaId: terms.id }, "SLA creation failed");
+      return reply.code(409).send({ ok: false, error: "sla_conflict_or_unknown_endpoint" });
+    }
+  });
+
+  app.get("/slas", async (request) => {
+    const limit = parseLimit(request.query, 50, 200);
+    return { ok: true, slas: await options.store.recentSlas(limit) };
+  });
+
+  app.get("/slas/:slaId", async (request, reply) => {
+    const { slaId } = request.params as { slaId: string };
+    const sla = await options.store.sla(slaId);
+    if (!sla) return reply.code(404).send({ ok: false, error: "sla_not_found" });
+    return { ok: true, sla };
+  });
+
+  app.get("/slas/:slaId/report", async (request, reply) => {
+    const { slaId } = request.params as { slaId: string };
+    const sla = await options.store.sla(slaId);
+    if (!sla?.evaluation) {
+      return reply.code(404).send({ ok: false, error: "sla_evaluation_not_found" });
+    }
+    const proofData = await options.store.slaEvaluationProofData(sla.evaluation.evaluationId);
+    const report = {
+      format: "rpc-sla-evaluation-v1",
+      generatedAt: new Date().toISOString(),
+      sla,
+      evidence: proofData?.evidence ?? [],
+      verification: {
+        termsHash: sla.termsHash,
+        evidenceRoot: sla.evaluation.evidenceRoot,
+        evaluationTransactionHash: sla.evaluation.txHash,
+      },
+    };
+    return reply
+      .header("content-disposition", `attachment; filename="sla-${safeFilename(slaId)}.json"`)
+      .type("application/json")
+      .send(report);
+  });
+
+  app.get("/sla-evaluations/:evaluationId/proof", async (request, reply) => {
+    const { evaluationId } = request.params as { evaluationId: string };
+    const proofData = await options.store.slaEvaluationProofData(evaluationId);
+    if (!proofData) {
+      return reply.code(404).send({ ok: false, error: "sla_evaluation_not_found" });
+    }
+    const leaves = proofData.evidence.map((item) => item.leafHash);
+    const tree = buildMerkleTree(leaves);
+    const proofs = proofData.evidence.map((item) => {
+      const proof = getMerkleProof(tree, item.leafHash);
+      return {
+        leafIndex: item.leafIndex,
+        leaf: item.leafHash,
+        proof,
+        verified: verifyMerkleProof(item.leafHash, proof, proofData.evaluation.evidenceRoot),
+      };
+    });
+    return {
+      ok: true,
+      evaluation: proofData.evaluation,
+      evidence: proofData.evidence,
+      proofs,
+      verified:
+        tree.root === proofData.evaluation.evidenceRoot && proofs.every((item) => item.verified),
+    };
+  });
+
   app.get("/reports/:reportId/proof", async (request, reply) => {
     const { reportId } = request.params as { reportId: string };
     const proofData = await options.store.reportProofData(reportId);
@@ -170,6 +256,12 @@ export function buildApp(options: AppOptions) {
       "# HELP rpc_sla_report_batches_total Report Merkle batches stored in PostgreSQL.",
       "# TYPE rpc_sla_report_batches_total gauge",
       `rpc_sla_report_batches_total ${summary.reportBatches}`,
+      "# HELP rpc_sla_definitions_total SLA definitions stored in PostgreSQL.",
+      "# TYPE rpc_sla_definitions_total gauge",
+      `rpc_sla_definitions_total ${summary.slas}`,
+      "# HELP rpc_sla_evaluations_total SLA evaluations stored in PostgreSQL.",
+      "# TYPE rpc_sla_evaluations_total gauge",
+      `rpc_sla_evaluations_total ${summary.slaEvaluations}`,
       "",
     ];
 
@@ -358,6 +450,10 @@ export function buildApp(options: AppOptions) {
   });
 
   return app;
+}
+
+function safeFilename(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/gu, "-");
 }
 
 function authenticateMonitorRequest(

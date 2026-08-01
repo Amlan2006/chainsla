@@ -213,6 +213,71 @@ export interface ReportProofData {
   };
 }
 
+export interface SlaCreate {
+  id: string;
+  providerId: string;
+  customerId: string;
+  providerAddress?: string;
+  customerAddress?: string;
+  endpointId: string;
+  periodStart: number;
+  periodEnd: number;
+  minimumUptime: number;
+  maximumP95LatencyMs?: number;
+  maximumErrorRate?: number;
+  maximumBlockDelay?: number;
+  termsHash: `0x${string}`;
+}
+
+export interface SlaItem extends SlaCreate {
+  status: string;
+  registrationTxHash?: string;
+  createdAt: string;
+  evaluation?: SlaEvaluationItem;
+}
+
+export interface SlaAggregateEvidenceRow {
+  endpointId: string;
+  checkType: string;
+  windowStart: number;
+  windowEnd: number;
+  validReportCount: number;
+  successRate: number;
+  errorRate: number;
+  p95LatencyMs?: number;
+  medianBlockDelay?: number;
+  status: string;
+}
+
+export interface SlaEvaluationInsert {
+  evaluationId: string;
+  slaId: string;
+  outcome: string;
+  evidenceRoot: `0x${string}`;
+  aggregateCount: number;
+  metrics: Record<string, unknown>;
+  reasons: string[];
+  evidence: Array<SlaAggregateEvidenceRow & { leafIndex: number; leafHash: `0x${string}` }>;
+}
+
+export interface SlaEvaluationItem {
+  evaluationId: string;
+  slaId: string;
+  outcome: string;
+  evidenceRoot: `0x${string}`;
+  aggregateCount: number;
+  metrics: Record<string, unknown>;
+  reasons: string[];
+  txHash?: string;
+  evaluatedAt: string;
+  publishedAt?: string;
+}
+
+export interface SlaEvaluationProofData {
+  evaluation: SlaEvaluationItem;
+  evidence: Array<SlaAggregateEvidenceRow & { leafIndex: number; leafHash: `0x${string}` }>;
+}
+
 export function loadDatabaseConfig(env: NodeJS.ProcessEnv = process.env): DatabaseConfig {
   const databaseUrl = env.DATABASE_URL;
 
@@ -1201,6 +1266,215 @@ export class Store {
     };
   }
 
+  async createSla(input: SlaCreate): Promise<SlaItem> {
+    if (!this.pool) {
+      return { ...input, status: "active", createdAt: new Date().toISOString() };
+    }
+
+    await this.pool.query(
+      `
+      INSERT INTO slas (
+        id, provider_id, customer_id, provider_address, customer_address, endpoint_id,
+        period_start, period_end, minimum_uptime, maximum_p95_latency_ms,
+        maximum_error_rate, maximum_block_delay, terms_hash
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      `,
+      [
+        input.id,
+        input.providerId,
+        input.customerId,
+        input.providerAddress,
+        input.customerAddress,
+        input.endpointId,
+        input.periodStart,
+        input.periodEnd,
+        input.minimumUptime,
+        input.maximumP95LatencyMs,
+        input.maximumErrorRate,
+        input.maximumBlockDelay,
+        input.termsHash,
+      ]
+    );
+
+    return (await this.sla(input.id))!;
+  }
+
+  async recentSlas(limit: number): Promise<SlaItem[]> {
+    if (!this.pool) return [];
+    const result = await this.pool.query<SlaDbRow>(
+      `${slaSelectSql} ORDER BY s.created_at DESC LIMIT $1`,
+      [limit]
+    );
+    return result.rows.map(mapSla);
+  }
+
+  async sla(slaId: string): Promise<SlaItem | undefined> {
+    if (!this.pool) return undefined;
+    const result = await this.pool.query<SlaDbRow>(`${slaSelectSql} WHERE s.id = $1`, [slaId]);
+    const row = result.rows[0];
+    return row ? mapSla(row) : undefined;
+  }
+
+  async pendingSlas(limit: number): Promise<SlaItem[]> {
+    if (!this.pool) return [];
+    const result = await this.pool.query<SlaDbRow>(
+      `${slaSelectSql}
+       WHERE s.status = 'active'
+         AND s.period_end <= extract(epoch FROM now())::bigint
+         AND e.evaluation_id IS NULL
+       ORDER BY s.period_end, s.id
+       LIMIT $1`,
+      [limit]
+    );
+    return result.rows.map(mapSla);
+  }
+
+  async unpublishedSlaEvaluations(limit: number): Promise<SlaItem[]> {
+    if (!this.pool) return [];
+    const result = await this.pool.query<SlaDbRow>(
+      `${slaSelectSql}
+       WHERE e.evaluation_id IS NOT NULL AND e.tx_hash IS NULL
+       ORDER BY e.evaluated_at
+       LIMIT $1`,
+      [limit]
+    );
+    return result.rows.map(mapSla);
+  }
+
+  async slaAggregateEvidence(sla: SlaItem): Promise<SlaAggregateEvidenceRow[]> {
+    if (!this.pool) return [];
+    const result = await this.pool.query<{
+      endpoint_id: string;
+      check_type: string;
+      window_start: string;
+      window_end: string;
+      valid_report_count: number;
+      success_rate: number;
+      error_rate: number;
+      p95_latency_ms: number | null;
+      median_block_delay: number | null;
+      status: string;
+    }>(
+      `
+      SELECT endpoint_id, check_type, window_start::text, window_end::text,
+        valid_report_count, success_rate, error_rate, p95_latency_ms,
+        median_block_delay, status
+      FROM aggregate_windows
+      WHERE endpoint_id = $1 AND window_start >= $2 AND window_end <= $3
+      ORDER BY window_start, check_type, window_end
+      `,
+      [sla.endpointId, sla.periodStart, sla.periodEnd]
+    );
+    return result.rows.map((row) => ({
+      endpointId: row.endpoint_id,
+      checkType: row.check_type,
+      windowStart: Number(row.window_start),
+      windowEnd: Number(row.window_end),
+      validReportCount: row.valid_report_count,
+      successRate: row.success_rate,
+      errorRate: row.error_rate,
+      p95LatencyMs: row.p95_latency_ms ?? undefined,
+      medianBlockDelay: row.median_block_delay ?? undefined,
+      status: row.status,
+    }));
+  }
+
+  async saveSlaEvaluation(input: SlaEvaluationInsert): Promise<void> {
+    if (!this.pool) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const inserted = await client.query<{ evaluation_id: string }>(
+        `
+        INSERT INTO sla_evaluations (
+          evaluation_id, sla_id, outcome, evidence_root, aggregate_count,
+          metrics_json, violation_reasons_json
+        ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
+        ON CONFLICT (sla_id) DO NOTHING
+        RETURNING evaluation_id
+        `,
+        [
+          input.evaluationId,
+          input.slaId,
+          input.outcome,
+          input.evidenceRoot,
+          input.aggregateCount,
+          JSON.stringify(input.metrics),
+          JSON.stringify(input.reasons),
+        ]
+      );
+      if (!inserted.rows[0]) {
+        await client.query("COMMIT");
+        return;
+      }
+      for (const item of input.evidence) {
+        const { leafIndex, leafHash, ...evidence } = item;
+        await client.query(
+          `
+          INSERT INTO sla_evaluation_evidence (evaluation_id, leaf_index, leaf_hash, evidence_json)
+          VALUES ($1, $2, $3, $4::jsonb)
+          ON CONFLICT (evaluation_id, leaf_index) DO NOTHING
+          `,
+          [input.evaluationId, leafIndex, leafHash, JSON.stringify(evidence)]
+        );
+      }
+      await client.query("UPDATE slas SET status = 'evaluated', updated_at = now() WHERE id = $1", [
+        input.slaId,
+      ]);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async markSlaRegistered(slaId: string, txHash: string): Promise<void> {
+    if (!this.pool) return;
+    await this.pool.query(
+      "UPDATE slas SET registration_tx_hash = $2, updated_at = now() WHERE id = $1",
+      [slaId, txHash]
+    );
+  }
+
+  async markSlaEvaluationPublished(evaluationId: string, txHash: string): Promise<void> {
+    if (!this.pool) return;
+    await this.pool.query(
+      `UPDATE sla_evaluations SET tx_hash = $2, published_at = now() WHERE evaluation_id = $1`,
+      [evaluationId, txHash]
+    );
+  }
+
+  async slaEvaluationProofData(evaluationId: string): Promise<SlaEvaluationProofData | undefined> {
+    if (!this.pool) return undefined;
+    const evaluationResult = await this.pool.query<SlaEvaluationDbRow>(
+      `${slaEvaluationSelectSql} WHERE evaluation_id = $1`,
+      [evaluationId]
+    );
+    const evaluationRow = evaluationResult.rows[0];
+    if (!evaluationRow) return undefined;
+
+    const evidenceResult = await this.pool.query<{
+      leaf_index: number;
+      leaf_hash: string;
+      evidence_json: SlaAggregateEvidenceRow;
+    }>(
+      `SELECT leaf_index, leaf_hash, evidence_json FROM sla_evaluation_evidence
+       WHERE evaluation_id = $1 ORDER BY leaf_index`,
+      [evaluationId]
+    );
+    return {
+      evaluation: mapSlaEvaluation(evaluationRow),
+      evidence: evidenceResult.rows.map((row) => ({
+        ...row.evidence_json,
+        leafIndex: row.leaf_index,
+        leafHash: row.leaf_hash as `0x${string}`,
+      })),
+    };
+  }
+
   async summary(): Promise<{
     monitors: number;
     endpoints: number;
@@ -1208,6 +1482,8 @@ export class Store {
     acceptedReports: number;
     aggregateWindows: number;
     reportBatches: number;
+    slas: number;
+    slaEvaluations: number;
   }> {
     if (!this.pool) {
       return {
@@ -1217,6 +1493,8 @@ export class Store {
         acceptedReports: 0,
         aggregateWindows: 0,
         reportBatches: 0,
+        slas: 0,
+        slaEvaluations: 0,
       };
     }
 
@@ -1227,6 +1505,8 @@ export class Store {
       accepted_reports: string;
       aggregate_windows: string;
       report_batches: string;
+      slas: string;
+      sla_evaluations: string;
     }>(`
       SELECT
         (SELECT count(*) FROM monitors)::text AS monitors,
@@ -1234,7 +1514,9 @@ export class Store {
         (SELECT count(*) FROM monitoring_reports)::text AS reports,
         (SELECT count(*) FROM monitoring_reports WHERE accepted)::text AS accepted_reports,
         (SELECT count(*) FROM aggregate_windows)::text AS aggregate_windows,
-        (SELECT count(*) FROM report_batches)::text AS report_batches
+        (SELECT count(*) FROM report_batches)::text AS report_batches,
+        (SELECT count(*) FROM slas)::text AS slas,
+        (SELECT count(*) FROM sla_evaluations)::text AS sla_evaluations
     `);
 
     const row = result.rows[0];
@@ -1245,8 +1527,99 @@ export class Store {
       acceptedReports: Number(row?.accepted_reports ?? 0),
       aggregateWindows: Number(row?.aggregate_windows ?? 0),
       reportBatches: Number(row?.report_batches ?? 0),
+      slas: Number(row?.slas ?? 0),
+      slaEvaluations: Number(row?.sla_evaluations ?? 0),
     };
   }
+}
+
+interface SlaEvaluationDbRow {
+  evaluation_id: string;
+  evaluation_sla_id: string;
+  outcome: string;
+  evidence_root: string;
+  aggregate_count: number;
+  metrics_json: Record<string, unknown>;
+  violation_reasons_json: string[];
+  evaluation_tx_hash: string | null;
+  evaluated_at: string;
+  published_at: string | null;
+}
+
+interface SlaDbRow extends SlaEvaluationDbRow {
+  sla_id: string;
+  provider_id: string;
+  customer_id: string;
+  provider_address: string | null;
+  customer_address: string | null;
+  endpoint_id: string;
+  period_start: string;
+  period_end: string;
+  minimum_uptime: number;
+  maximum_p95_latency_ms: number | null;
+  maximum_error_rate: number | null;
+  maximum_block_delay: number | null;
+  terms_hash: string;
+  sla_status: string;
+  registration_tx_hash: string | null;
+  sla_created_at: string;
+}
+
+const slaEvaluationSelectSql = `
+  SELECT evaluation_id, sla_id AS evaluation_sla_id, outcome, evidence_root,
+    aggregate_count, metrics_json, violation_reasons_json,
+    tx_hash AS evaluation_tx_hash, evaluated_at::text, published_at::text
+  FROM sla_evaluations
+`;
+
+const slaSelectSql = `
+  SELECT s.id AS sla_id, s.provider_id, s.customer_id, s.provider_address,
+    s.customer_address, s.endpoint_id, s.period_start::text, s.period_end::text,
+    s.minimum_uptime, s.maximum_p95_latency_ms, s.maximum_error_rate,
+    s.maximum_block_delay, s.terms_hash, s.status AS sla_status,
+    s.registration_tx_hash, s.created_at::text AS sla_created_at,
+    e.evaluation_id, e.sla_id AS evaluation_sla_id, e.outcome, e.evidence_root,
+    e.aggregate_count, e.metrics_json, e.violation_reasons_json,
+    e.tx_hash AS evaluation_tx_hash, e.evaluated_at::text, e.published_at::text
+  FROM slas s
+  LEFT JOIN sla_evaluations e ON e.sla_id = s.id
+`;
+
+function mapSla(row: SlaDbRow): SlaItem {
+  return {
+    id: row.sla_id,
+    providerId: row.provider_id,
+    customerId: row.customer_id,
+    providerAddress: row.provider_address ?? undefined,
+    customerAddress: row.customer_address ?? undefined,
+    endpointId: row.endpoint_id,
+    periodStart: Number(row.period_start),
+    periodEnd: Number(row.period_end),
+    minimumUptime: row.minimum_uptime,
+    maximumP95LatencyMs: row.maximum_p95_latency_ms ?? undefined,
+    maximumErrorRate: row.maximum_error_rate ?? undefined,
+    maximumBlockDelay: row.maximum_block_delay ?? undefined,
+    termsHash: row.terms_hash as `0x${string}`,
+    status: row.sla_status,
+    registrationTxHash: row.registration_tx_hash ?? undefined,
+    createdAt: row.sla_created_at,
+    evaluation: row.evaluation_id ? mapSlaEvaluation(row) : undefined,
+  };
+}
+
+function mapSlaEvaluation(row: SlaEvaluationDbRow): SlaEvaluationItem {
+  return {
+    evaluationId: row.evaluation_id,
+    slaId: row.evaluation_sla_id,
+    outcome: row.outcome,
+    evidenceRoot: row.evidence_root as `0x${string}`,
+    aggregateCount: row.aggregate_count,
+    metrics: row.metrics_json,
+    reasons: row.violation_reasons_json,
+    txHash: row.evaluation_tx_hash ?? undefined,
+    evaluatedAt: row.evaluated_at,
+    publishedAt: row.published_at ?? undefined,
+  };
 }
 
 function normalizeAddress(value: string | null): `0x${string}` | undefined {

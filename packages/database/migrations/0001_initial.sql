@@ -138,3 +138,50 @@ CREATE TABLE IF NOT EXISTS report_batch_reports (
 
 CREATE INDEX IF NOT EXISTS report_batch_reports_report_idx
   ON report_batch_reports (report_uuid);
+
+CREATE TABLE IF NOT EXISTS slas (
+  id TEXT PRIMARY KEY,
+  provider_id TEXT NOT NULL,
+  customer_id TEXT NOT NULL,
+  provider_address TEXT,
+  customer_address TEXT,
+  endpoint_id TEXT NOT NULL REFERENCES rpc_endpoints(id),
+  period_start BIGINT NOT NULL,
+  period_end BIGINT NOT NULL,
+  minimum_uptime DOUBLE PRECISION NOT NULL,
+  maximum_p95_latency_ms DOUBLE PRECISION,
+  maximum_error_rate DOUBLE PRECISION,
+  maximum_block_delay DOUBLE PRECISION,
+  terms_hash TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  registration_tx_hash TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (period_end > period_start),
+  CHECK (minimum_uptime >= 0 AND minimum_uptime <= 1),
+  CHECK (maximum_error_rate IS NULL OR (maximum_error_rate >= 0 AND maximum_error_rate <= 1))
+);
+
+CREATE INDEX IF NOT EXISTS slas_evaluation_due_idx
+  ON slas (status, period_end);
+
+CREATE TABLE IF NOT EXISTS sla_evaluations (
+  evaluation_id TEXT PRIMARY KEY,
+  sla_id TEXT NOT NULL UNIQUE REFERENCES slas(id) ON DELETE CASCADE,
+  outcome TEXT NOT NULL,
+  evidence_root TEXT NOT NULL,
+  aggregate_count INTEGER NOT NULL,
+  metrics_json JSONB NOT NULL,
+  violation_reasons_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  tx_hash TEXT,
+  evaluated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  published_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS sla_evaluation_evidence (
+  evaluation_id TEXT NOT NULL REFERENCES sla_evaluations(evaluation_id) ON DELETE CASCADE,
+  leaf_index INTEGER NOT NULL,
+  leaf_hash TEXT NOT NULL,
+  evidence_json JSONB NOT NULL,
+  PRIMARY KEY (evaluation_id, leaf_index)
+);
